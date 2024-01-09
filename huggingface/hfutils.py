@@ -3,7 +3,9 @@ import shutil
 
 import torch
 import pynvml
-from huggingface_hub import hf_hub_download
+from huggingface_hub import (
+    hf_hub_download
+)
 from transformers import (
     pipeline,
     BitsAndBytesConfig,
@@ -13,24 +15,16 @@ from transformers import (
     AutoTokenizer
 )
 from pathlib import Path
+from huggingface import defs
 
 # BASE_DIR = str(Path.home()) + '/dev/llms/models'
-BASE_DIR = str(Path.home()) + '/data/llms/models'
+BASE_DIR = str(Path.home()) + '/data/llms/models/huggingface'
 BASE_CACHE = str(Path.home()) + '/.cache/huggingface/hub'
-MODEL_NUM = 2
+MODEL_NUM = 1
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # DEVICE = 'cpu'
 print(DEVICE)
-
-models = {
-    0: {'name': 'bert/distilbert-base-uncased-finetuned-sst-2-english', 'gptq': False},
-    1: {'name': 'mistralai/Mistral-7B-v0.1', 'gptq': False},
-    2: {'name': 'mistralai/Mistral-7B-Instruct-v0.1', 'gptq': False},
-    3: {'name': 'teknium/OpenHermes-2.5-Mistral-7B', 'gptq': False},
-    4: {'name': 'TheBloke/OpenHermes-2.5-Mistral-7B-GPTQ', 'gptq': True},
-    # 5: {'name': 'TheBloke/neural-chat-7B-v3-2-GPTQ', 'gptq': True},
-}
 
 
 def _init():
@@ -38,7 +32,7 @@ def _init():
     dirs = []
     _ = [dirs.extend([f'{d}/{dir}' for dir in os.listdir(f'{path}/{d}')]) for d in os.listdir(path)]
 
-    keep_set = set([mod['name'] for mod in models.values()])
+    keep_set = set([mod['name'] for mod in defs.models.values()])
     existing_set = set(dirs)
     remove_set = existing_set.difference(keep_set)
     add_set = keep_set.difference(existing_set)
@@ -53,10 +47,10 @@ def _init():
     # download_and_save add_set
     for mname in add_set:
         print(f'Downloading model: {mname}')
-        download_and_save_model(mname)
+        download_model(mname)
 
 
-def download_and_save_model(model_name):
+def download_model(model_name):
     print('downloading...')
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map='cpu')
@@ -101,7 +95,11 @@ def load_local_model(model_name, gptq=False):
         trust_remote_code=True,
     )
     # model.to(DEVICE)
-    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    tokenizer.padding_side = 'right'
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.add_eos_token = True
+
     print('loaded.')
 
     pynvml.nvmlInit()
@@ -112,29 +110,37 @@ def load_local_model(model_name, gptq=False):
     return model, tokenizer
 
 
+def do_inference(model, tokenizer, prompt):
+    # print(tokenizer.batch_decode(outputs))
+
+    inputs = tokenizer.encode_plus(
+        prompt,
+        return_tensors="pt"
+    )['input_ids'].to(DEVICE)
+
+    outputs = model.generate(
+        inputs,
+        do_sample=True,
+        max_length=5000,
+        temperature=0.8,
+        top_k=50,
+        top_p=0.9,
+        num_return_sequences=1
+    )
+
+    response = tokenizer.decode(outputs[0])
+    return response
+
+
 def chat_with_model(model, tokenizer):
     while True:
         prompt = input('\nEnter prompt:\n')
         if not prompt.strip():
             break
-        inputs = tokenizer.encode_plus(
-            prompt,
-            return_tensors="pt"
-        )['input_ids'].to(DEVICE)
-        outputs = model.generate(
-            inputs,
-            do_sample=True,
-            max_length=5000,
-            temperature=0.8,
-            top_k=50,
-            top_p=0.9,
-            num_return_sequences=1
-        )
 
-        print('Response:\n')
-        response = tokenizer.decode(outputs[0])
-        print(response)
-        # print(tokenizer.batch_decode(outputs))
+        response = do_inference(model, tokenizer, prompt)
+
+        print(f'Response:\n{response}')
 
 
 def run():
@@ -144,13 +150,14 @@ def run():
 
     _init()
 
-    model_config = models[MODEL_NUM]
+    model_config = defs.models[MODEL_NUM]
 
     model_name, gptq = model_config['name'], model_config['gptq']
     print(f'Model name: {model_name}, gptq: {gptq}')
 
     # model, tokenizer = download_and_save_model(model_name)
     model, tokenizer = load_local_model(model_name, gptq=gptq)
+
 
     # mem_alloc_cpu = torch.cuda.memory_allocated('cpu')
     mem_alloc_gpu = torch.cuda.memory_allocated('cuda')
@@ -176,4 +183,5 @@ def run():
     print('Exiting')
 
 
-run()
+if __name__ == "__main__":
+    run()
